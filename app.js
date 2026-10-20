@@ -251,6 +251,7 @@ function updatePrBannerForExercise(exerciseName) {
   if (matchingSets.length === 0) {
     prWeightEl.textContent = '尚無紀錄';
     prVolumeEl.textContent = '--';
+    renderLastSessionForExercise(exerciseName, []);
     return;
   }
 
@@ -273,6 +274,69 @@ function updatePrBannerForExercise(exerciseName) {
 
   prWeightEl.textContent = `${maxWeight} kg × ${maxWeightReps}`;
   prVolumeEl.textContent = `${formatNumber(maxSingleSetVolume)} kg`;
+  renderLastSessionForExercise(exerciseName, matchingSets);
+}
+
+function renderLastSessionForExercise(exerciseName, matchingSets) {
+  const dateBadgeEl = document.getElementById('last-session-date-badge');
+  const summaryEl = document.getElementById('last-session-summary');
+  const listEl = document.getElementById('last-session-sets-list');
+  if (!dateBadgeEl || !summaryEl || !listEl) return;
+
+  if (!matchingSets || matchingSets.length === 0) {
+    dateBadgeEl.textContent = '尚無紀錄';
+    summaryEl.textContent = '';
+    listEl.innerHTML = `<div class="last-session-empty">此動作尚無歷史訓練紀錄</div>`;
+    return;
+  }
+
+  const todayKey = getLocalDateKey();
+  const uniqueDatesDesc = Array.from(new Set(matchingSets.map((s) => s.date))).sort((a, b) =>
+    a < b ? 1 : -1
+  );
+
+  // Prefer the most recent session date strictly before today so the reference stays fixed while logging today's workout.
+  // If the exercise has only ever been logged today, show today's sets as reference.
+  const priorDates = uniqueDatesDesc.filter((d) => d < todayKey);
+  const targetDate = priorDates.length > 0 ? priorDates[0] : uniqueDatesDesc[0];
+  const isTodayFallback = targetDate === todayKey;
+
+  const sessionSets = matchingSets.filter((s) => s.date === targetDate);
+  const sessionVolume = sessionSets.reduce(
+    (sum, s) => sum + (Number(s.weight) || 0) * (Number(s.reps) || 0),
+    0
+  );
+
+  dateBadgeEl.textContent = isTodayFallback ? `${targetDate} (今日)` : targetDate;
+  summaryEl.textContent = `共 ${sessionSets.length} 組 · 容量 ${formatNumber(sessionVolume)} kg`;
+
+  listEl.innerHTML = sessionSets
+    .map((item, idx) => {
+      const vol = formatNumber((Number(item.weight) || 0) * (Number(item.reps) || 0));
+      const rpeHtml = item.rpe ? `<span class="rpe-tag">RPE ${item.rpe}</span>` : '';
+      const rpeAttr = item.rpe ? escapeHtml(item.rpe) : '';
+      return `
+        <div class="last-session-set-row">
+          <div class="last-session-set-left">
+            <span class="last-session-set-num">#${idx + 1}</span>
+            <div>
+              <span class="last-session-set-main">${item.weight} kg × ${item.reps} 次</span>
+              ${rpeHtml}
+              <span class="last-session-set-vol">(${vol} kg)</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="apply-set-btn"
+            data-apply-weight="${item.weight}"
+            data-apply-reps="${item.reps}"
+            data-apply-rpe="${rpeAttr}"
+            title="將此組重量與次數帶入輸入框"
+          >套用</button>
+        </div>
+      `;
+    })
+    .join('');
 }
 
 function renderTodaySets() {
@@ -709,8 +773,26 @@ function bindEvents() {
     }
   });
 
-  // Delete Set Delegation (Works in both Today & History tabs)
+  // Delete Set & Apply Last Session Set Delegation
   document.querySelector('.app-content').addEventListener('click', (e) => {
+    const applyBtn = e.target.closest('.apply-set-btn');
+    if (applyBtn) {
+      const w = applyBtn.dataset.applyWeight;
+      const r = applyBtn.dataset.applyReps;
+      const rpe = applyBtn.dataset.applyRpe;
+
+      if (w !== undefined) document.getElementById('weight-input').value = w;
+      if (r !== undefined) document.getElementById('reps-input').value = r;
+
+      state.selectedRpe = rpe || null;
+      document.querySelectorAll('.rpe-pill').forEach((p) => {
+        p.classList.toggle('active', Boolean(rpe) && p.dataset.rpe === rpe);
+      });
+
+      showToast(`已帶入：${w} kg × ${r} 次${rpe ? ` (RPE ${rpe})` : ''}`);
+      return;
+    }
+
     const deleteBtn = e.target.closest('.delete-set-btn');
     if (!deleteBtn) return;
     const setId = deleteBtn.dataset.deleteId;
