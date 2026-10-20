@@ -1,0 +1,19 @@
+{
+  "name": "IronLog 健身組數紀錄",
+  "short_name": "IronLog",
+  "description": "專為 iOS 設計的極簡健身組數與容量追蹤 PWA",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
