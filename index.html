@@ -28,10 +28,23 @@
         <span class="app-badge">IRONLOG WORKOUT</span>
         <h1 id="page-title">今日訓練</h1>
       </div>
-      <div class="header-stats-pill" id="today-quick-summary">
-        <span id="header-today-sets">0 組</span>
-        <span class="dot-divider">·</span>
-        <span id="header-today-volume">0 kg</span>
+      <div class="header-right-group">
+        <!-- Minimalist Account Status Area -->
+        <div class="header-account-area" id="header-account-area">
+          <button type="button" id="header-login-btn" class="account-pill-btn">
+            <span>登入 / 註冊</span>
+          </button>
+          <div id="header-user-pill" class="account-user-pill hidden">
+            <span class="cloud-status-dot"></span>
+            <span id="header-user-email" class="account-email-text"></span>
+            <button type="button" id="header-logout-btn" class="account-logout-link">登出</button>
+          </div>
+        </div>
+        <div class="header-stats-pill" id="today-quick-summary">
+          <span id="header-today-sets">0 組</span>
+          <span class="dot-divider">·</span>
+          <span id="header-today-volume">0 kg</span>
+        </div>
       </div>
     </header>
 
@@ -217,6 +230,35 @@
 
       <!-- TAB 3: DATA BACKUP & SETTINGS -->
       <section id="tab-settings" class="tab-panel">
+        <!-- Supabase Account & Cloud Sync Card -->
+        <div class="card">
+          <div class="card-header-row">
+            <h2 class="card-title">雲端帳號 (Supabase Auth)</h2>
+            <span id="supabase-mode-badge" class="status-pill">本機離線模式</span>
+          </div>
+          <p class="card-desc" id="account-card-desc">
+            登入後，您的每一組訓練紀錄將自動同步至個人專屬的 Supabase 雲端資料庫（具備 RLS 隱私隔離）；離線或未登入時則自動降級使用本機 <code>localStorage</code>。
+          </p>
+          <div class="cloud-meta-box">
+            <div class="cloud-meta-row">
+              <span>目前帳號狀態</span>
+              <strong id="settings-user-email">未登入</strong>
+            </div>
+            <div class="cloud-meta-row">
+              <span>資料儲存軌道</span>
+              <strong id="storage-track-label">本機 localStorage (Fallback)</strong>
+            </div>
+          </div>
+          <div class="backup-actions">
+            <button type="button" id="settings-login-btn" class="btn-primary">
+              <span>🔐 登入 / 註冊雲端帳號</span>
+            </button>
+            <button type="button" id="settings-logout-btn" class="btn-danger-outline hidden">
+              <span>登出目前帳號</span>
+            </button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-header-row">
             <h2 class="card-title">iCloud / 雲端硬碟備份</h2>
@@ -320,10 +362,55 @@
       </button>
     </nav>
 
+    <!-- Auth Modal (Login / Sign Up) -->
+    <div id="auth-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h2 id="auth-modal-title" class="card-title">雲端帳號登入 / 註冊</h2>
+          <button type="button" id="close-auth-modal-btn" class="modal-close-btn" aria-label="關閉">✕</button>
+        </div>
+        <p class="card-desc">
+          輸入 Email 與密碼即可登入或註冊。登入後，您的組數將即時儲存至個人 Supabase 雲端資料庫。
+        </p>
+        <form id="auth-form" class="auth-form" novalidate>
+          <div class="input-group">
+            <label for="auth-email-input" class="section-label">電子郵件 (Email)</label>
+            <input
+              type="email"
+              id="auth-email-input"
+              class="ios-input"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            />
+          </div>
+          <div class="input-group">
+            <label for="auth-password-input" class="section-label">密碼 (Password，至少 6 碼)</label>
+            <input
+              type="password"
+              id="auth-password-input"
+              class="ios-input"
+              placeholder="請輸入密碼"
+              autocomplete="current-password"
+              minlength="6"
+              required
+            />
+          </div>
+          <div id="auth-feedback" class="auth-feedback hidden"></div>
+          <div class="auth-btn-group">
+            <button type="submit" id="auth-signin-btn" class="btn-primary">登入帳號</button>
+            <button type="button" id="auth-signup-btn" class="btn-secondary-block">註冊新帳號</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
 
+  <!-- Supabase Official JS SDK via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./app.js"></script>
 </body>
 </html>

@@ -1,7 +1,10 @@
 /**
  * IronLog — iOS PWA Workout & Set Logger
- * Pure ES6+ Module-Free Architecture with LocalStorage & Web Audio API
+ * Pure ES6+ Architecture with Supabase Cloud Auth/DB & LocalStorage Offline Fallback
  */
+
+const SUPABASE_URL = 'https://wmrvxsuudoyoveccbcev.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtcnZ4c3V1ZG95b3ZlY2NiY2V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MTEyMzcsImV4cCI6MjEwODA4NzIzN30.c6Kdtsq0qhozud31WJSr8dtCBjXG8OL23o6bIOFisN8';
 
 const STORAGE_KEYS = {
   LOGS: 'ironlog_workout_sets_v1',
@@ -22,6 +25,8 @@ const DEFAULT_EXERCISES = [
 ];
 
 const state = {
+  supabase: null,
+  user: null,
   exercises: [],
   sets: [],
   selectedRpe: null,
@@ -48,6 +53,22 @@ function getLocalDateKey(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+function formatTimeFromIso(isoStr) {
+  if (!isoStr) return '';
+  const dt = new Date(isoStr);
+  if (isNaN(dt.getTime())) return '';
+  return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+}
+
+function normalizeDateKey(rawDate, fallbackCreatedAt) {
+  if (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    return rawDate;
+  }
+  const dt = new Date(rawDate || fallbackCreatedAt || Date.now());
+  if (isNaN(dt.getTime())) return getLocalDateKey();
+  return getLocalDateKey(dt);
+}
+
 function formatTimeFromSeconds(sec) {
   const safeSec = Math.max(0, Math.ceil(sec));
   const mins = String(Math.floor(safeSec / 60)).padStart(2, '0');
@@ -67,7 +88,7 @@ function showToast(message) {
   clearTimeout(showToast._timer);
   showToast._timer = setTimeout(() => {
     toastEl.classList.remove('visible');
-  }, 2400);
+  }, 2600);
 }
 
 // ==========================================
@@ -115,8 +136,75 @@ function playBeepSequence() {
 }
 
 // ==========================================
-// Storage Management
+// Supabase Client & Dual-Track Storage Logic
 // ==========================================
+function isSupabaseConfigured() {
+  return (
+    typeof SUPABASE_URL === 'string' &&
+    SUPABASE_URL.startsWith('https://') &&
+    SUPABASE_URL !== 'YOUR_SUPABASE_PROJECT_URL' &&
+    typeof SUPABASE_ANON_KEY === 'string' &&
+    SUPABASE_ANON_KEY.length > 20 &&
+    SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY'
+  );
+}
+
+function isCloudActive() {
+  return Boolean(state.supabase && state.user && navigator.onLine);
+}
+
+function initSupabaseClient() {
+  if (!isSupabaseConfigured()) {
+    state.supabase = null;
+    updateAccountUI();
+    return;
+  }
+
+  if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+    console.warn('Supabase CDN SDK 尚未載入，降級為本機模式');
+    state.supabase = null;
+    updateAccountUI();
+    return;
+  }
+
+  try {
+    state.supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Check active session on startup
+    state.supabase.auth.getSession().then(({ data }) => {
+      state.user = data?.session?.user || null;
+      updateAccountUI();
+      syncDataFromActiveTrack();
+    });
+
+    // Listen to login / logout state changes
+    state.supabase.auth.onAuthStateChange((_event, session) => {
+      const prevUserId = state.user?.id || null;
+      const nextUser = session?.user || null;
+      state.user = nextUser;
+      updateAccountUI();
+
+      if ((nextUser?.id || null) !== prevUserId) {
+        syncDataFromActiveTrack();
+      }
+    });
+  } catch (err) {
+    console.error('Supabase 初始化失敗:', err);
+    state.supabase = null;
+    updateAccountUI();
+  }
+}
+
+function loadLocalSetsFromStorage() {
+  try {
+    const rawSets = localStorage.getItem(STORAGE_KEYS.LOGS);
+    const parsed = rawSets ? JSON.parse(rawSets) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function loadStateFromStorage() {
   try {
     const rawExercises = localStorage.getItem(STORAGE_KEYS.EXERCISES);
@@ -128,13 +216,7 @@ function loadStateFromStorage() {
     state.exercises = [...DEFAULT_EXERCISES];
   }
 
-  try {
-    const rawSets = localStorage.getItem(STORAGE_KEYS.LOGS);
-    state.sets = rawSets ? JSON.parse(rawSets) : [];
-    if (!Array.isArray(state.sets)) state.sets = [];
-  } catch {
-    state.sets = [];
-  }
+  state.sets = loadLocalSetsFromStorage();
 
   const savedAutoRest = localStorage.getItem(STORAGE_KEYS.AUTO_REST);
   if (savedAutoRest !== null) {
@@ -155,6 +237,214 @@ function saveExercisesToStorage() {
 
 function saveSetsToStorage() {
   localStorage.setItem(STORAGE_KEYS.LOGS, JSON.stringify(state.sets));
+}
+
+function mapSupabaseRowToSet(row) {
+  return {
+    id: String(row.id),
+    date: normalizeDateKey(row.date, row.created_at),
+    time: formatTimeFromIso(row.created_at),
+    exercise: row.exercise,
+    weight: Number(row.weight),
+    reps: Number(row.reps),
+    rpe: row.rpe !== null && row.rpe !== undefined ? String(row.rpe) : null
+  };
+}
+
+async function syncDataFromActiveTrack() {
+  if (isCloudActive()) {
+    try {
+      const { data, error } = await state.supabase
+        .from('workout_logs')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      const cloudSets = (data || []).map(mapSupabaseRowToSet);
+      state.sets = cloudSets;
+
+      // Merge any custom exercises found in cloud records
+      const cloudExercises = cloudSets.map((s) => s.exercise).filter(Boolean);
+      const mergedExercises = Array.from(new Set([...state.exercises, ...cloudExercises]));
+      if (mergedExercises.length !== state.exercises.length) {
+        state.exercises = mergedExercises;
+        saveExercisesToStorage();
+      }
+    } catch (err) {
+      console.warn('從 Supabase 讀取失敗，自動降級使用 localStorage:', err);
+      state.sets = loadLocalSetsFromStorage();
+      showToast('⚠️ 雲端讀取失敗，已切換為本機離線紀錄');
+    }
+  } else {
+    state.sets = loadLocalSetsFromStorage();
+  }
+
+  renderAllViews();
+}
+
+function renderAllViews() {
+  const selectEl = document.getElementById('exercise-select');
+  renderExerciseSelect(selectEl ? selectEl.value : undefined);
+  renderTodaySets();
+  renderHistoryAndStats();
+  renderCloudBackupStatus();
+  updateAccountUI();
+}
+
+function updateAccountUI() {
+  const headerLoginBtn = document.getElementById('header-login-btn');
+  const headerUserPill = document.getElementById('header-user-pill');
+  const headerUserEmail = document.getElementById('header-user-email');
+
+  const settingsUserEmail = document.getElementById('settings-user-email');
+  const storageTrackLabel = document.getElementById('storage-track-label');
+  const supabaseModeBadge = document.getElementById('supabase-mode-badge');
+  const settingsLoginBtn = document.getElementById('settings-login-btn');
+  const settingsLogoutBtn = document.getElementById('settings-logout-btn');
+
+  if (state.user) {
+    const email = state.user.email || '已登入使用者';
+    headerLoginBtn?.classList.add('hidden');
+    headerUserPill?.classList.remove('hidden');
+    if (headerUserEmail) headerUserEmail.textContent = email;
+
+    if (settingsUserEmail) settingsUserEmail.textContent = email;
+    settingsLoginBtn?.classList.add('hidden');
+    settingsLogoutBtn?.classList.remove('hidden');
+
+    if (navigator.onLine) {
+      if (storageTrackLabel) storageTrackLabel.textContent = '☁️ Supabase 雲端資料庫 (workout_logs)';
+      if (supabaseModeBadge) {
+        supabaseModeBadge.textContent = '雲端同步中';
+        supabaseModeBadge.classList.add('ok');
+      }
+    } else {
+      if (storageTrackLabel) storageTrackLabel.textContent = '📴 離線暫存 (localStorage Fallback)';
+      if (supabaseModeBadge) {
+        supabaseModeBadge.textContent = '離線 Fallback';
+        supabaseModeBadge.classList.remove('ok');
+      }
+    }
+  } else {
+    headerLoginBtn?.classList.remove('hidden');
+    headerUserPill?.classList.add('hidden');
+
+    if (settingsUserEmail) {
+      settingsUserEmail.textContent = isSupabaseConfigured()
+        ? '未登入'
+        : '未登入（尚未設定 Supabase 金鑰）';
+    }
+    if (storageTrackLabel) storageTrackLabel.textContent = '📱 本機 localStorage (Fallback)';
+    if (supabaseModeBadge) {
+      supabaseModeBadge.textContent = '本機離線模式';
+      supabaseModeBadge.classList.remove('ok');
+    }
+    settingsLoginBtn?.classList.remove('hidden');
+    settingsLogoutBtn?.classList.add('hidden');
+  }
+}
+
+// ==========================================
+// Auth Modal & Actions
+// ==========================================
+function openAuthModal() {
+  const modal = document.getElementById('auth-modal');
+  const feedback = document.getElementById('auth-feedback');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  if (!isSupabaseConfigured()) {
+    setAuthFeedback(
+      '請先在 app.js 頂部填入您的 SUPABASE_URL 與 SUPABASE_ANON_KEY 後重新整理頁面。',
+      false
+    );
+  } else if (feedback) {
+    feedback.classList.add('hidden');
+  }
+  document.getElementById('auth-email-input')?.focus();
+}
+
+function closeAuthModal() {
+  document.getElementById('auth-modal')?.classList.add('hidden');
+}
+
+function setAuthFeedback(message, isSuccess = false) {
+  const feedback = document.getElementById('auth-feedback');
+  if (!feedback) return;
+  feedback.textContent = message;
+  feedback.classList.toggle('success', isSuccess);
+  feedback.classList.remove('hidden');
+}
+
+async function handleAuthSubmit(mode) {
+  if (!isSupabaseConfigured() || !state.supabase) {
+    setAuthFeedback(
+      '尚未設定 Supabase 金鑰！請打開 app.js 第 6~7 行填入 SUPABASE_URL 與 SUPABASE_ANON_KEY。',
+      false
+    );
+    return;
+  }
+
+  const email = document.getElementById('auth-email-input').value.trim();
+  const password = document.getElementById('auth-password-input').value;
+
+  if (!email || !password) {
+    setAuthFeedback('請完整輸入 Email 與密碼。', false);
+    return;
+  }
+  if (password.length < 6) {
+    setAuthFeedback('密碼長度請至少輸入 6 個字元。', false);
+    return;
+  }
+
+  const signInBtn = document.getElementById('auth-signin-btn');
+  const signUpBtn = document.getElementById('auth-signup-btn');
+  signInBtn.disabled = true;
+  signUpBtn.disabled = true;
+
+  try {
+    if (mode === 'signup') {
+      const { data, error } = await state.supabase.auth.signUp({ email, password });
+      if (error) throw error;
+
+      if (data?.session) {
+        setAuthFeedback('✅ 註冊並登入成功！', true);
+        showToast(`🎉 歡迎加入，${email}！`);
+        setTimeout(closeAuthModal, 600);
+      } else {
+        setAuthFeedback(
+          '✅ 註冊成功！若您的 Supabase 專案有開啟 Email 驗證，請先至信箱點擊確認信後再登入。',
+          true
+        );
+      }
+    } else {
+      const { error } = await state.supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+
+      setAuthFeedback('✅ 登入成功！正在同步雲端訓練紀錄...', true);
+      showToast(`☁️ 已登入：${email}`);
+      setTimeout(closeAuthModal, 500);
+    }
+  } catch (err) {
+    setAuthFeedback(`驗證失敗：${err.message || '請確認帳號密碼是否正確'}`, false);
+  } finally {
+    signInBtn.disabled = false;
+    signUpBtn.disabled = false;
+  }
+}
+
+async function handleSignOut() {
+  if (!state.supabase) return;
+  try {
+    await state.supabase.auth.signOut();
+    state.user = null;
+    state.sets = loadLocalSetsFromStorage();
+    renderAllViews();
+    showToast('已登出雲端帳號，切換回本機紀錄');
+  } catch (err) {
+    showToast(`登出失敗：${err.message || ''}`);
+  }
 }
 
 // ==========================================
@@ -296,7 +586,6 @@ function renderLastSessionForExercise(exerciseName, matchingSets) {
   );
 
   // Prefer the most recent session date strictly before today so the reference stays fixed while logging today's workout.
-  // If the exercise has only ever been logged today, show today's sets as reference.
   const priorDates = uniqueDatesDesc.filter((d) => d < todayKey);
   const targetDate = priorDates.length > 0 ? priorDates[0] : uniqueDatesDesc[0];
   const isTodayFallback = targetDate === todayKey;
@@ -533,7 +822,7 @@ async function saveToCloudDrive() {
     }
   }
 
-  // 2. Desktop File System Access API (Directly pick iCloud Drive / OneDrive / Google Drive folder)
+  // 2. Desktop File System Access API
   if (typeof window.showSaveFilePicker === 'function') {
     try {
       const handle = await window.showSaveFilePicker({
@@ -582,7 +871,7 @@ function exportBackupJson() {
 function importBackupJson(file) {
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const parsed = JSON.parse(e.target.result);
       if (!parsed || !Array.isArray(parsed.sets)) {
@@ -594,6 +883,31 @@ function importBackupJson(file) {
         const mergedExercises = Array.from(new Set([...state.exercises, ...parsed.exercises]));
         state.exercises = mergedExercises;
         saveExercisesToStorage();
+      }
+
+      if (isCloudActive()) {
+        // When logged in to Supabase, insert imported sets to cloud workout_logs
+        const rowsToInsert = parsed.sets.map((s) => ({
+          user_id: state.user.id,
+          date: s.date || getLocalDateKey(),
+          exercise: s.exercise,
+          weight: Number(s.weight) || 0,
+          reps: Number(s.reps) || 1,
+          rpe: s.rpe !== null && s.rpe !== undefined && s.rpe !== '' ? Number(s.rpe) : null
+        }));
+
+        if (state.importMode === 'overwrite') {
+          await state.supabase.from('workout_logs').delete().eq('user_id', state.user.id);
+        }
+
+        if (rowsToInsert.length > 0) {
+          const { error } = await state.supabase.from('workout_logs').insert(rowsToInsert);
+          if (error) throw error;
+        }
+        await syncDataFromActiveTrack();
+        recordBackupSuccess();
+        showToast(`☁️ 已匯入 ${rowsToInsert.length} 筆組數至 Supabase 雲端！`);
+        return;
       }
 
       if (state.importMode === 'merge') {
@@ -610,16 +924,15 @@ function importBackupJson(file) {
 
       saveSetsToStorage();
       recordBackupSuccess();
-      renderExerciseSelect();
-      renderTodaySets();
-      renderHistoryAndStats();
+      renderAllViews();
       showToast(
         state.importMode === 'merge'
           ? `✅ 智慧合併完成！目前共 ${state.sets.length} 筆組數紀錄`
           : `✅ 完整覆蓋還原 ${state.sets.length} 筆組數紀錄！`
       );
-    } catch {
-      showToast('⚠️ JSON 解析失敗，請確認檔案有效');
+    } catch (err) {
+      console.error(err);
+      showToast('⚠️ JSON 匯入失敗，請確認檔案格式或雲端連線');
     }
   };
   reader.readAsText(file);
@@ -649,7 +962,41 @@ function bindEvents() {
     });
   });
 
-  // Exercise Change -> Update PR
+  // Auth Buttons & Modal Events
+  document.getElementById('header-login-btn')?.addEventListener('click', openAuthModal);
+  document.getElementById('settings-login-btn')?.addEventListener('click', openAuthModal);
+  document.getElementById('header-logout-btn')?.addEventListener('click', handleSignOut);
+  document.getElementById('settings-logout-btn')?.addEventListener('click', handleSignOut);
+  document.getElementById('close-auth-modal-btn')?.addEventListener('click', closeAuthModal);
+
+  document.getElementById('auth-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'auth-modal') closeAuthModal();
+  });
+
+  document.getElementById('auth-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    handleAuthSubmit('signin');
+  });
+
+  document.getElementById('auth-signup-btn')?.addEventListener('click', () => {
+    handleAuthSubmit('signup');
+  });
+
+  // Online / Offline Automatic Track Switch
+  window.addEventListener('online', () => {
+    updateAccountUI();
+    if (isCloudActive()) {
+      syncDataFromActiveTrack();
+      showToast('🌐 網路已恢復，已切換至 Supabase 雲端同步');
+    }
+  });
+
+  window.addEventListener('offline', () => {
+    updateAccountUI();
+    showToast('📴 目前處於離線狀態，已自動降級為本機儲存');
+  });
+
+  // Exercise Change -> Update PR & Last Session
   const exerciseSelect = document.getElementById('exercise-select');
   exerciseSelect.addEventListener('change', () => {
     updatePrBannerForExercise(exerciseSelect.value);
@@ -728,8 +1075,8 @@ function bindEvents() {
     });
   });
 
-  // Add Set Button
-  document.getElementById('add-set-btn').addEventListener('click', () => {
+  // Add Set Button (Dual-Track: Supabase Cloud Insert or LocalStorage Fallback)
+  document.getElementById('add-set-btn').addEventListener('click', async () => {
     ensureAudioContext();
     const exercise = exerciseSelect.value;
     const weight = parseFloat(document.getElementById('weight-input').value);
@@ -745,20 +1092,59 @@ function bindEvents() {
     }
 
     const now = new Date();
+    const dateStr = getLocalDateKey(now);
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const numericRpe = state.selectedRpe !== null ? Number(state.selectedRpe) : null;
 
-    const newSet = {
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      date: getLocalDateKey(now),
-      time: timeStr,
-      exercise,
-      weight,
-      reps,
-      rpe: state.selectedRpe
-    };
+    if (isCloudActive()) {
+      try {
+        const { data, error } = await state.supabase
+          .from('workout_logs')
+          .insert([
+            {
+              user_id: state.user.id,
+              date: dateStr,
+              exercise,
+              weight,
+              reps,
+              rpe: numericRpe
+            }
+          ])
+          .select()
+          .single();
 
-    state.sets.push(newSet);
-    saveSetsToStorage();
+        if (error) throw error;
+
+        const insertedSet = mapSupabaseRowToSet(data);
+        state.sets.push(insertedSet);
+      } catch (err) {
+        console.warn('Supabase 寫入失敗，自動降級寫入 localStorage:', err);
+        const fallbackSet = {
+          id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          date: dateStr,
+          time: timeStr,
+          exercise,
+          weight,
+          reps,
+          rpe: state.selectedRpe
+        };
+        state.sets.push(fallbackSet);
+        saveSetsToStorage();
+        showToast('⚠️ 雲端寫入失敗，已自動轉存至本機 localStorage');
+      }
+    } else {
+      const localSet = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        date: dateStr,
+        time: timeStr,
+        exercise,
+        weight,
+        reps,
+        rpe: state.selectedRpe
+      };
+      state.sets.push(localSet);
+      saveSetsToStorage();
+    }
 
     updatePrBannerForExercise(exercise);
     renderTodaySets();
@@ -767,14 +1153,18 @@ function bindEvents() {
 
     if (state.autoRestSeconds > 0) {
       startRestTimer(state.autoRestSeconds);
-      showToast(`💪 已紀錄！啟動 ${state.autoRestSeconds} 秒休息倒數`);
+      showToast(
+        isCloudActive()
+          ? `☁️ 已同步雲端！啟動 ${state.autoRestSeconds} 秒休息倒數`
+          : `💪 已紀錄！啟動 ${state.autoRestSeconds} 秒休息倒數`
+      );
     } else {
-      showToast('💪 已紀錄組數！');
+      showToast(isCloudActive() ? '☁️ 已同步組數至雲端！' : '💪 已紀錄組數！');
     }
   });
 
-  // Delete Set & Apply Last Session Set Delegation
-  document.querySelector('.app-content').addEventListener('click', (e) => {
+  // Delete Set & Apply Last Session Set Delegation (Dual-Track Delete)
+  document.querySelector('.app-content').addEventListener('click', async (e) => {
     const applyBtn = e.target.closest('.apply-set-btn');
     if (applyBtn) {
       const w = applyBtn.dataset.applyWeight;
@@ -796,13 +1186,31 @@ function bindEvents() {
     const deleteBtn = e.target.closest('.delete-set-btn');
     if (!deleteBtn) return;
     const setId = deleteBtn.dataset.deleteId;
-    state.sets = state.sets.filter((s) => s.id !== setId);
-    saveSetsToStorage();
+
+    if (isCloudActive()) {
+      try {
+        const { error } = await state.supabase
+          .from('workout_logs')
+          .delete()
+          .eq('id', setId);
+        if (error) throw error;
+      } catch (err) {
+        console.warn('Supabase 刪除失敗:', err);
+        showToast('⚠️ 雲端刪除失敗，請檢查網路連線');
+        return;
+      }
+    }
+
+    state.sets = state.sets.filter((s) => String(s.id) !== String(setId));
+    if (!isCloudActive()) {
+      saveSetsToStorage();
+    }
+
     updatePrBannerForExercise(exerciseSelect.value);
     renderTodaySets();
     renderHistoryAndStats();
     renderCloudBackupStatus();
-    showToast('已刪除該組紀錄');
+    showToast(isCloudActive() ? '☁️ 已從雲端刪除該組紀錄' : '已刪除該組紀錄');
   });
 
   // Timer Banner Controls
@@ -846,11 +1254,26 @@ function bindEvents() {
     showToast('🔊 已播放計時完成提示音');
   });
 
-  document.getElementById('clear-all-data-btn').addEventListener('click', () => {
+  document.getElementById('clear-all-data-btn').addEventListener('click', async () => {
     const confirmed = window.confirm('確定要清空所有歷史訓練組數嗎？此操作無法復原。');
     if (!confirmed) return;
+
+    if (isCloudActive()) {
+      try {
+        const { error } = await state.supabase
+          .from('workout_logs')
+          .delete()
+          .eq('user_id', state.user.id);
+        if (error) throw error;
+      } catch (err) {
+        showToast(`雲端清空失敗：${err.message || ''}`);
+        return;
+      }
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.LOGS);
+    }
+
     state.sets = [];
-    saveSetsToStorage();
     updatePrBannerForExercise(exerciseSelect.value);
     renderTodaySets();
     renderHistoryAndStats();
@@ -894,5 +1317,6 @@ document.addEventListener('DOMContentLoaded', () => {
   renderHistoryAndStats();
   renderCloudBackupStatus();
   bindEvents();
+  initSupabaseClient();
   checkPwaAndServiceWorkerStatus();
 });
