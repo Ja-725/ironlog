@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>IronLog — 健身紀錄</title>
+
+  <!-- iOS PWA Meta Tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="IronLog" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="format-detection" content="telephone=no" />
+
+  <!-- Icons & Manifest -->
+  <link rel="apple-touch-icon" href="./icon.svg" />
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <link rel="manifest" href="./manifest.json" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-titles">
+        <span class="app-badge">IRONLOG WORKOUT</span>
+        <h1 id="page-title">今日訓練</h1>
+      </div>
+      <div class="header-stats-pill" id="today-quick-summary">
+        <span id="header-today-sets">0 組</span>
+        <span class="dot-divider">·</span>
+        <span id="header-today-volume">0 kg</span>
+      </div>
+    </header>
+
+    <!-- Rest Timer Floating Banner -->
+    <section id="timer-banner" class="timer-banner" aria-live="polite">
+      <div class="timer-info">
+        <span class="timer-label">組間休息倒數</span>
+        <span id="timer-display" class="timer-digits">01:30</span>
+      </div>
+      <div class="timer-controls">
+        <button type="button" class="btn-chip" data-timer-set="60">60s</button>
+        <button type="button" class="btn-chip" data-timer-set="90">90s</button>
+        <button type="button" class="btn-chip" data-timer-set="120">120s</button>
+        <button type="button" id="timer-add-15" class="btn-chip">+15s</button>
+        <button type="button" id="timer-stop-btn" class="btn-chip btn-danger-chip" title="停止計時">✕</button>
+      </div>
+      <div class="timer-progress-track">
+        <div id="timer-progress-bar" class="timer-progress-bar"></div>
+      </div>
+    </section>
+
+    <!-- Main Scrollable Viewport -->
+    <main class="app-content">
+      <!-- TAB 1: WORKOUT LOGGER -->
+      <section id="tab-workout" class="tab-panel active">
+        <!-- Exercise Card -->
+        <div class="card">
+          <div class="card-header-row">
+            <label for="exercise-select" class="section-label">訓練動作</label>
+            <button type="button" id="toggle-add-exercise-btn" class="text-action-btn">+ 新增自訂動作</button>
+          </div>
+
+          <div class="select-wrapper">
+            <select id="exercise-select" class="ios-select"></select>
+          </div>
+
+          <!-- Custom Exercise Input Drawer -->
+          <div id="custom-exercise-drawer" class="custom-drawer hidden">
+            <input
+              type="text"
+              id="custom-exercise-input"
+              class="ios-input"
+              placeholder="輸入動作名稱（例：羅馬尼亞硬舉）"
+              maxlength="30"
+            />
+            <button type="button" id="save-custom-exercise-btn" class="btn-secondary">加入</button>
+          </div>
+
+          <!-- PR & Last Record Pill -->
+          <div class="pr-banner" id="pr-banner">
+            <div class="pr-item">
+              <span class="pr-tag">歷史 PR</span>
+              <strong id="pr-weight-value">尚無紀錄</strong>
+            </div>
+            <div class="pr-divider"></div>
+            <div class="pr-item">
+              <span class="pr-tag">最佳單組容量</span>
+              <strong id="pr-volume-value">--</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Set Input Card -->
+        <div class="card">
+          <div class="input-group">
+            <div class="input-header">
+              <label for="weight-input" class="section-label">重量 (KG)</label>
+              <span class="quick-hint">步進 ±2.5 kg</span>
+            </div>
+            <div class="stepper-row">
+              <button type="button" class="stepper-btn" data-step-target="weight-input" data-step="-2.5">-2.5</button>
+              <input
+                type="number"
+                id="weight-input"
+                class="stepper-input"
+                value="60"
+                min="0"
+                max="1000"
+                step="0.5"
+                inputmode="decimal"
+              />
+              <button type="button" class="stepper-btn" data-step-target="weight-input" data-step="2.5">+2.5</button>
+            </div>
+          </div>
+
+          <div class="input-group">
+            <div class="input-header">
+              <label for="reps-input" class="section-label">次數 (REPS)</label>
+              <span class="quick-hint">步進 ±1 次</span>
+            </div>
+            <div class="stepper-row">
+              <button type="button" class="stepper-btn" data-step-target="reps-input" data-step="-1">−1</button>
+              <input
+                type="number"
+                id="reps-input"
+                class="stepper-input"
+                value="8"
+                min="1"
+                max="200"
+                step="1"
+                inputmode="numeric"
+              />
+              <button type="button" class="stepper-btn" data-step-target="reps-input" data-step="1">+1</button>
+            </div>
+          </div>
+
+          <div class="input-group">
+            <div class="input-header">
+              <label class="section-label">自覺強度 RPE <span class="optional-badge">選填 1-10</span></label>
+              <button type="button" id="clear-rpe-btn" class="text-action-btn muted">清除</button>
+            </div>
+            <div class="rpe-selector" id="rpe-selector">
+              <button type="button" class="rpe-pill" data-rpe="6">6</button>
+              <button type="button" class="rpe-pill" data-rpe="7">7</button>
+              <button type="button" class="rpe-pill" data-rpe="7.5">7.5</button>
+              <button type="button" class="rpe-pill" data-rpe="8">8</button>
+              <button type="button" class="rpe-pill" data-rpe="8.5">8.5</button>
+              <button type="button" class="rpe-pill" data-rpe="9">9</button>
+              <button type="button" class="rpe-pill" data-rpe="9.5">9.5</button>
+              <button type="button" class="rpe-pill" data-rpe="10">10</button>
+            </div>
+          </div>
+
+          <!-- Auto Rest Preset Selection -->
+          <div class="rest-preset-row">
+            <span class="rest-preset-label">完成後啟動計時：</span>
+            <div class="rest-preset-pills" id="auto-rest-selector">
+              <button type="button" class="preset-pill" data-rest="0">不自動</button>
+              <button type="button" class="preset-pill" data-rest="60">60s</button>
+              <button type="button" class="preset-pill active" data-rest="90">90s</button>
+              <button type="button" class="preset-pill" data-rest="120">120s</button>
+            </div>
+          </div>
+
+          <button type="button" id="add-set-btn" class="btn-primary">
+            <span>完成並紀錄此組</span>
+          </button>
+        </div>
+
+        <!-- Today's Sets List -->
+        <div class="card">
+          <div class="card-header-row">
+            <h2 class="card-title">今日已完成組數</h2>
+            <span id="today-date-label" class="muted-caption"></span>
+          </div>
+          <div id="today-sets-list" class="sets-list"></div>
+        </div>
+      </section>
+
+      <!-- TAB 2: HISTORY & STATS -->
+      <section id="tab-history" class="tab-panel">
+        <!-- Global Lifetime Stats -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">累計總訓練量</span>
+            <strong id="stat-total-volume" class="stat-value">0 <small>kg</small></strong>
+            <span id="stat-total-tonnage" class="stat-sub">0.00 噸</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">累計完成組數</span>
+            <strong id="stat-total-sets" class="stat-value">0 <small>組</small></strong>
+            <span id="stat-total-days" class="stat-sub">共 0 個訓練日</span>
+          </div>
+        </div>
+
+        <!-- Grouped By Date Container -->
+        <div id="history-days-container" class="history-container"></div>
+      </section>
+
+      <!-- TAB 3: DATA BACKUP & SETTINGS -->
+      <section id="tab-settings" class="tab-panel">
+        <div class="card">
+          <div class="card-header-row">
+            <h2 class="card-title">iCloud / 雲端硬碟備份</h2>
+            <span id="backup-status-badge" class="status-pill">尚未備份</span>
+          </div>
+          <p class="card-desc">
+            在 iPhone 點擊下方按鈕可喚起 <strong>iOS 原生分享面板</strong>，一鍵選擇「<strong>儲存到檔案 (iCloud Drive)</strong>」、「<strong>Google 雲端硬碟</strong>」或「<strong>OneDrive</strong>」；在電腦上則可直接選擇雲端硬碟同步資料夾存檔。
+          </p>
+
+          <div class="cloud-meta-box">
+            <div class="cloud-meta-row">
+              <span>上次雲端備份時間</span>
+              <strong id="last-backup-time">尚無紀錄</strong>
+            </div>
+            <div class="cloud-meta-row">
+              <span>本機累積資料量</span>
+              <strong id="local-data-summary">0 組紀錄 · 0 個動作</strong>
+            </div>
+          </div>
+
+          <div class="backup-actions">
+            <button type="button" id="cloud-share-btn" class="btn-primary">
+              <span>☁️ 儲存至 iCloud / 雲端硬碟</span>
+            </button>
+
+            <button type="button" id="export-json-btn" class="btn-secondary-block">
+              <span>⬇ 直接下載 JSON 備份檔</span>
+            </button>
+
+            <div class="import-mode-row">
+              <span class="rest-preset-label">從雲端匯入模式：</span>
+              <div class="rest-preset-pills" id="import-mode-selector">
+                <button type="button" class="preset-pill active" data-import-mode="merge">智慧合併</button>
+                <button type="button" class="preset-pill" data-import-mode="overwrite">完整覆蓋</button>
+              </div>
+            </div>
+
+            <label for="import-json-input" class="btn-secondary-block file-label-btn">
+              <span>📂 從 iCloud / 雲端硬碟選取備份還原</span>
+              <input type="file" id="import-json-input" accept=".json,application/json" hidden />
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">音訊與獨立模式檢查</h2>
+          <div class="info-list">
+            <div class="info-row">
+              <span>PWA 獨立主畫面模式</span>
+              <strong id="pwa-status-badge" class="status-pill">檢查中</strong>
+            </div>
+            <div class="info-row">
+              <span>離線快取 (Service Worker)</span>
+              <strong id="sw-status-badge" class="status-pill">檢查中</strong>
+            </div>
+            <div class="info-row">
+              <span>提示音測試 (Web Audio API)</span>
+              <button type="button" id="test-sound-btn" class="btn-chip">播放測試音</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card danger-zone">
+          <h2 class="card-title danger-text">危險操作區</h2>
+          <p class="card-desc">清除本機所有歷史訓練組數與自訂動作（無法復原，請先匯出備份）。</p>
+          <button type="button" id="clear-all-data-btn" class="btn-danger-outline">清空所有訓練紀錄</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Tab Bar (iOS Safe Area Adapted) -->
+    <nav class="tab-bar" role="tablist">
+      <button type="button" class="tab-btn active" data-tab="tab-workout" data-title="今日訓練">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.5 6.5 17.5 17.5" />
+          <path d="M3 10l7-7" />
+          <path d="M14 21l7-7" />
+          <path d="M2 6l4-4" />
+          <path d="M18 22l4-4" />
+        </svg>
+        <span>訓練紀錄</span>
+      </button>
+
+      <button type="button" class="tab-btn" data-tab="tab-history" data-title="歷史與統計">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3v18h18" />
+          <rect x="7" y="10" width="3" height="7" rx="1" />
+          <rect x="12" y="6" width="3" height="11" rx="1" />
+          <rect x="17" y="13" width="3" height="4" rx="1" />
+        </svg>
+        <span>歷史統計</span>
+      </button>
+
+      <button type="button" class="tab-btn" data-tab="tab-settings" data-title="備份與設定">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        <span>資料備份</span>
+      </button>
+    </nav>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
