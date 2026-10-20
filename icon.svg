@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1C1C1E" />
+      <stop offset="100%" stop-color="#000000" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9F0A" />
+      <stop offset="100%" stop-color="#FF375F" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="url(#bg)" />
+  <g fill="url(#accent)">
+    <!-- Left plates -->
+    <rect x="68" y="176" width="32" height="160" rx="12" />
+    <rect x="112" y="136" width="44" height="240" rx="14" />
+    <!-- Center bar -->
+    <rect x="156" y="238" width="200" height="36" rx="6" />
+    <!-- Right plates -->
+    <rect x="356" y="136" width="44" height="240" rx="14" />
+    <rect x="412" y="176" width="32" height="160" rx="12" />
+  </g>
+</svg>
