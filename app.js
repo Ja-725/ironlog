@@ -1296,9 +1296,17 @@ function checkPwaAndServiceWorkerStatus() {
 
   const swBadge = document.getElementById('sw-status-badge');
   if ('serviceWorker' in navigator) {
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    });
+
     navigator.serviceWorker
-      .register('./service-worker.js')
-      .then(() => {
+      .register('./service-worker.js', { updateViaCache: 'none' })
+      .then((reg) => {
+        reg.update();
         swBadge.textContent = '已就緒 (離線可用)';
         swBadge.classList.add('ok');
       })
