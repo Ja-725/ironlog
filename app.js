@@ -42,9 +42,7 @@ const state = {
     isRunning: false,
     notifiedForCurrentRun: false
   },
-  audioCtx: null,
-  keepAliveOsc: null,
-  keepAliveAudioEl: null
+  audioCtx: null
 };
 
 // ==========================================
@@ -96,9 +94,21 @@ function showToast(message) {
 }
 
 // ==========================================
-// Web Audio API Synthesizer (iOS Compatible)
+// Web Audio API Synthesizer (Non-Intrusive Ambient Mode for Music Apps)
 // ==========================================
+function configureAmbientAudioSession() {
+  // iOS 17+ AudioSession API: 'ambient' mixes with Apple Music / Spotify / YouTube Music without pausing them
+  if ('audioSession' in navigator) {
+    try {
+      navigator.audioSession.type = 'ambient';
+    } catch {
+      // Ignore if browser does not support audioSession assignment
+    }
+  }
+}
+
 function ensureAudioContext() {
+  configureAmbientAudioSession();
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return null;
   if (!state.audioCtx) {
@@ -116,78 +126,35 @@ function playBeepSequence() {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    // Play a double 4-note chime so it is clearly audible even across apps
-    const notes = [880, 1174.66, 1318.51, 1760, 880, 1174.66, 1318.51, 1760];
+    const notes = [880, 1174.66, 1318.51, 1760]; // A5 - D6 - E6 - A6 short chime
 
     notes.forEach((freq, idx) => {
-      const startOffset = idx < 4 ? idx * 0.14 : 0.72 + (idx - 4) * 0.14;
+      const startOffset = idx * 0.13;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'triangle';
+      osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, now + startOffset);
 
       gain.gain.setValueAtTime(0.001, now + startOffset);
-      gain.gain.exponentialRampToValueAtTime(0.38, now + startOffset + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + 0.13);
+      gain.gain.exponentialRampToValueAtTime(0.24, now + startOffset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + 0.12);
 
       osc.connect(gain);
       gain.connect(ctx.destination);
 
       osc.start(now + startOffset);
-      osc.stop(now + startOffset + 0.14);
+      osc.stop(now + startOffset + 0.13);
     });
+
+    // Suspend AudioContext immediately after the short chime finishes so it never holds onto the OS audio session
+    clearTimeout(playBeepSequence._suspendTimer);
+    playBeepSequence._suspendTimer = setTimeout(() => {
+      if (state.audioCtx && state.audioCtx.state === 'running') {
+        state.audioCtx.suspend().catch(() => {});
+      }
+    }, 650);
   } catch (err) {
     console.warn('Web Audio API 無法播放提示音:', err);
-  }
-}
-
-// Silent Audio Keep-Alive: Prevents iOS / Mobile OS from suspending JS timer when user switches apps
-const SILENT_WAV_DATA_URI =
-  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
-
-function startBackgroundKeepAlive() {
-  try {
-    const ctx = ensureAudioContext();
-    if (ctx && !state.keepAliveOsc) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = 30;
-      gain.gain.value = 0.00001; // Inaudible keep-alive signal
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      state.keepAliveOsc = osc;
-    }
-  } catch {
-    // Ignore WebAudio keep-alive error
-  }
-
-  try {
-    if (!state.keepAliveAudioEl) {
-      const audio = new Audio(SILENT_WAV_DATA_URI);
-      audio.loop = true;
-      audio.volume = 0.01;
-      audio.setAttribute('playsinline', 'true');
-      state.keepAliveAudioEl = audio;
-    }
-    state.keepAliveAudioEl.play().catch(() => {});
-  } catch {
-    // Ignore HTMLAudio keep-alive error
-  }
-}
-
-function stopBackgroundKeepAlive() {
-  if (state.keepAliveOsc) {
-    try {
-      state.keepAliveOsc.stop();
-      state.keepAliveOsc.disconnect();
-    } catch {}
-    state.keepAliveOsc = null;
-  }
-  if (state.keepAliveAudioEl) {
-    try {
-      state.keepAliveAudioEl.pause();
-    } catch {}
   }
 }
 
@@ -242,9 +209,8 @@ function updateNotificationStatusUI() {
 }
 
 async function requestNotificationPermission(silentIfAlreadyGranted = false) {
-  ensureAudioContext();
   if (!isNotificationSupported()) {
-    showToast('📱 iPhone 請先「加入主畫面」並從主畫面開啟，即可啟用系統通知！（已啟用背景提示音）');
+    showToast('📱 iPhone 請先「加入主畫面」並從主畫面開啟，即可啟用系統橫幅通知！');
     return false;
   }
 
@@ -707,7 +673,6 @@ function completeRestTimer() {
 
   clearInterval(state.timer.intervalId);
   state.timer.worker?.postMessage({ cmd: 'STOP' });
-  stopBackgroundKeepAlive();
 
   const banner = document.getElementById('timer-banner');
   const display = document.getElementById('timer-display');
@@ -718,13 +683,16 @@ function completeRestTimer() {
   if (display) display.textContent = '00:00';
   if (progressBar) progressBar.style.width = '0%';
 
-  playBeepSequence();
   showToast('🔔 休息結束！準備下一組訓練');
 
-  // If user is currently in another app / background tab, also trigger system notification from client side
   const exerciseSelect = document.getElementById('exercise-select');
   const exerciseName = exerciseSelect ? exerciseSelect.value : '';
-  if (document.visibilityState !== 'visible') {
+
+  if (document.visibilityState === 'visible') {
+    // Only play gentle ambient Web Audio chime when user is actively viewing IronLog
+    playBeepSequence();
+  } else {
+    // When in another app, rely purely on OS System Notification so background music is never interrupted
     triggerCrossAppNotification(
       '🔔 IronLog — 組間休息結束！',
       `休息時間到${exerciseName ? `（${exerciseName}）` : ''}，準備開始下一組訓練 💪`
@@ -733,8 +701,7 @@ function completeRestTimer() {
 }
 
 function startRestTimer(seconds, options = {}) {
-  ensureAudioContext();
-  startBackgroundKeepAlive();
+  configureAmbientAudioSession();
 
   // Automatically prompt for notification permission on first timer use if still 'default'
   if (isNotificationSupported() && Notification.permission === 'default') {
@@ -780,7 +747,6 @@ function startRestTimer(seconds, options = {}) {
 function stopRestTimer() {
   clearInterval(state.timer.intervalId);
   state.timer.worker?.postMessage({ cmd: 'STOP' });
-  stopBackgroundKeepAlive();
   sendSwMessage({ type: 'CANCEL_REST_NOTIFICATION' });
 
   state.timer.isRunning = false;
@@ -796,7 +762,6 @@ function stopRestTimer() {
 }
 
 function addSecondsToTimer(extraSeconds) {
-  ensureAudioContext();
   if (!state.timer.isRunning) {
     startRestTimer(extraSeconds);
     return;
@@ -1377,7 +1342,6 @@ function bindEvents() {
 
   // Add Set Button (Dual-Track: Supabase Cloud Insert or LocalStorage Fallback)
   document.getElementById('add-set-btn').addEventListener('click', async () => {
-    ensureAudioContext();
     const exercise = exerciseSelect.value;
     const weight = parseFloat(document.getElementById('weight-input').value);
     const reps = parseInt(document.getElementById('reps-input').value, 10);
