@@ -51,7 +51,13 @@
     <!-- Rest Timer Floating Banner -->
     <section id="timer-banner" class="timer-banner" aria-live="polite">
       <div class="timer-info">
-        <span class="timer-label">組間休息倒數</span>
+        <div class="timer-label-group">
+          <span class="timer-label">組間休息倒數</span>
+          <button type="button" id="enable-notify-banner-btn" class="notify-mini-btn">
+            🔔 開啟跨應用通知
+          </button>
+          <span id="notify-active-tag" class="notify-mini-tag hidden">🔔 背景通知已就緒</span>
+        </div>
         <span id="timer-display" class="timer-digits">01:30</span>
       </div>
       <div class="timer-controls">
@@ -304,8 +310,16 @@
         </div>
 
         <div class="card">
-          <h2 class="card-title">音訊與獨立模式檢查</h2>
+          <h2 class="card-title">通知、音訊與獨立模式檢查</h2>
           <div class="info-list">
+            <div class="info-row">
+              <span>跨應用背景通知權限</span>
+              <button type="button" id="request-notify-btn" class="btn-chip">開啟通知權限</button>
+            </div>
+            <div class="info-row">
+              <span>跨應用通知實測 (點擊後切換 App)</span>
+              <button type="button" id="test-bg-notify-btn" class="btn-chip">3 秒後發送通知</button>
+            </div>
             <div class="info-row">
               <span>PWA 獨立主畫面模式</span>
               <strong id="pwa-status-badge" class="status-pill">檢查中</strong>

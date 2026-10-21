@@ -35,12 +35,16 @@ const state = {
   lastBackupMeta: null,
   timer: {
     intervalId: null,
+    worker: null,
     totalSeconds: 90,
     remainingSeconds: 90,
     endTimeMs: null,
-    isRunning: false
+    isRunning: false,
+    notifiedForCurrentRun: false
   },
-  audioCtx: null
+  audioCtx: null,
+  keepAliveOsc: null,
+  keepAliveAudioEl: null
 };
 
 // ==========================================
@@ -112,26 +116,207 @@ function playBeepSequence() {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    const notes = [880, 1174.66, 1318.51, 1760]; // A5 - D6 - E6 - A6 chime
+    // Play a double 4-note chime so it is clearly audible even across apps
+    const notes = [880, 1174.66, 1318.51, 1760, 880, 1174.66, 1318.51, 1760];
 
     notes.forEach((freq, idx) => {
+      const startOffset = idx < 4 ? idx * 0.14 : 0.72 + (idx - 4) * 0.14;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + startOffset);
 
-      gain.gain.setValueAtTime(0.001, now + idx * 0.14);
-      gain.gain.exponentialRampToValueAtTime(0.28, now + idx * 0.14 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.14 + 0.13);
+      gain.gain.setValueAtTime(0.001, now + startOffset);
+      gain.gain.exponentialRampToValueAtTime(0.38, now + startOffset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + 0.13);
 
       osc.connect(gain);
       gain.connect(ctx.destination);
 
-      osc.start(now + idx * 0.14);
-      osc.stop(now + idx * 0.14 + 0.14);
+      osc.start(now + startOffset);
+      osc.stop(now + startOffset + 0.14);
     });
   } catch (err) {
     console.warn('Web Audio API 無法播放提示音:', err);
+  }
+}
+
+// Silent Audio Keep-Alive: Prevents iOS / Mobile OS from suspending JS timer when user switches apps
+const SILENT_WAV_DATA_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+function startBackgroundKeepAlive() {
+  try {
+    const ctx = ensureAudioContext();
+    if (ctx && !state.keepAliveOsc) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 30;
+      gain.gain.value = 0.00001; // Inaudible keep-alive signal
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      state.keepAliveOsc = osc;
+    }
+  } catch {
+    // Ignore WebAudio keep-alive error
+  }
+
+  try {
+    if (!state.keepAliveAudioEl) {
+      const audio = new Audio(SILENT_WAV_DATA_URI);
+      audio.loop = true;
+      audio.volume = 0.01;
+      audio.setAttribute('playsinline', 'true');
+      state.keepAliveAudioEl = audio;
+    }
+    state.keepAliveAudioEl.play().catch(() => {});
+  } catch {
+    // Ignore HTMLAudio keep-alive error
+  }
+}
+
+function stopBackgroundKeepAlive() {
+  if (state.keepAliveOsc) {
+    try {
+      state.keepAliveOsc.stop();
+      state.keepAliveOsc.disconnect();
+    } catch {}
+    state.keepAliveOsc = null;
+  }
+  if (state.keepAliveAudioEl) {
+    try {
+      state.keepAliveAudioEl.pause();
+    } catch {}
+  }
+}
+
+// ==========================================
+// Cross-App System Notification (Web Notifications + Service Worker)
+// ==========================================
+function isNotificationSupported() {
+  return 'Notification' in window;
+}
+
+function updateNotificationStatusUI() {
+  const bannerBtn = document.getElementById('enable-notify-banner-btn');
+  const activeTag = document.getElementById('notify-active-tag');
+  const settingsBtn = document.getElementById('request-notify-btn');
+
+  if (!isNotificationSupported()) {
+    bannerBtn?.classList.remove('hidden');
+    if (bannerBtn) bannerBtn.textContent = '🔔 點此了解 iOS 跨應用通知';
+    activeTag?.classList.add('hidden');
+    if (settingsBtn) {
+      settingsBtn.textContent = '需加入主畫面啟用';
+      settingsBtn.classList.remove('ok');
+    }
+    return;
+  }
+
+  const perm = Notification.permission;
+  if (perm === 'granted') {
+    bannerBtn?.classList.add('hidden');
+    activeTag?.classList.remove('hidden');
+    if (settingsBtn) {
+      settingsBtn.textContent = '已開啟 (Granted)';
+      settingsBtn.classList.add('ok');
+    }
+  } else if (perm === 'denied') {
+    bannerBtn?.classList.remove('hidden');
+    if (bannerBtn) bannerBtn.textContent = '🔕 通知已封鎖 (點此查看)';
+    activeTag?.classList.add('hidden');
+    if (settingsBtn) {
+      settingsBtn.textContent = '已封鎖 (請至系統設定開啟)';
+      settingsBtn.classList.remove('ok');
+    }
+  } else {
+    bannerBtn?.classList.remove('hidden');
+    if (bannerBtn) bannerBtn.textContent = '🔔 開啟跨應用通知';
+    activeTag?.classList.add('hidden');
+    if (settingsBtn) {
+      settingsBtn.textContent = '點擊開啟通知權限';
+      settingsBtn.classList.remove('ok');
+    }
+  }
+}
+
+async function requestNotificationPermission(silentIfAlreadyGranted = false) {
+  ensureAudioContext();
+  if (!isNotificationSupported()) {
+    showToast('📱 iPhone 請先「加入主畫面」並從主畫面開啟，即可啟用系統通知！（已啟用背景提示音）');
+    return false;
+  }
+
+  if (Notification.permission === 'granted') {
+    updateNotificationStatusUI();
+    if (!silentIfAlreadyGranted) {
+      showToast('🔔 跨應用系統通知已開啟！');
+    }
+    return true;
+  }
+
+  if (Notification.permission === 'denied') {
+    showToast('⚠️ 通知權限已被封鎖，請至手機「設定 -> 通知 -> IronLog」或瀏覽器設定中開啟');
+    updateNotificationStatusUI();
+    return false;
+  }
+
+  try {
+    const result = await Notification.requestPermission();
+    updateNotificationStatusUI();
+    if (result === 'granted') {
+      showToast('✅ 已成功開啟跨應用通知！切換 App 也能收到倒數結束提醒');
+      return true;
+    } else {
+      showToast('⚠️ 未授予通知權限，切換 App 時將僅透過背景音訊提醒');
+      return false;
+    }
+  } catch (err) {
+    console.warn('請求通知權限失敗:', err);
+    return false;
+  }
+}
+
+async function sendSwMessage(payload) {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (reg && reg.active) {
+      reg.active.postMessage(payload);
+    } else if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage(payload);
+    }
+  } catch (err) {
+    console.warn('無法傳送訊息給 Service Worker:', err);
+  }
+}
+
+async function triggerCrossAppNotification(title, body) {
+  if (!isNotificationSupported() || Notification.permission !== 'granted') return;
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.ready;
+      if (reg && typeof reg.showNotification === 'function') {
+        await reg.showNotification(title, {
+          body,
+          icon: './icon.svg',
+          badge: './icon.svg',
+          tag: 'ironlog-rest-timer',
+          renotify: true,
+          vibrate: [250, 120, 250, 120, 350]
+        });
+        return;
+      }
+    }
+    new Notification(title, {
+      body,
+      icon: './icon.svg',
+      tag: 'ironlog-rest-timer'
+    });
+  } catch (err) {
+    console.warn('發送系統通知失敗:', err);
   }
 }
 
@@ -448,10 +633,114 @@ async function handleSignOut() {
 }
 
 // ==========================================
-// Rest Countdown Timer
+// Rest Countdown Timer (Web Worker + Service Worker + Background Keep-Alive)
 // ==========================================
-function startRestTimer(seconds) {
+function ensureTimerWorker() {
+  if (state.timer.worker) return state.timer.worker;
+  try {
+    const workerCode = `
+      let timerId = null;
+      let targetEndMs = 0;
+      self.onmessage = function(e) {
+        const data = e.data || {};
+        if (data.cmd === 'START') {
+          clearInterval(timerId);
+          targetEndMs = data.endTimeMs;
+          timerId = setInterval(() => {
+            const msLeft = targetEndMs - Date.now();
+            if (msLeft <= 0) {
+              clearInterval(timerId);
+              timerId = null;
+              self.postMessage({ type: 'DONE' });
+            } else {
+              self.postMessage({ type: 'TICK', msLeft });
+            }
+          }, 200);
+        } else if (data.cmd === 'STOP') {
+          clearInterval(timerId);
+          timerId = null;
+        }
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+    worker.onmessage = (e) => {
+      const msg = e.data || {};
+      if (msg.type === 'TICK') {
+        updateTimerDisplayFromNow();
+      } else if (msg.type === 'DONE') {
+        completeRestTimer();
+      }
+    };
+    state.timer.worker = worker;
+    return worker;
+  } catch {
+    return null;
+  }
+}
+
+function updateTimerDisplayFromNow() {
+  if (!state.timer.isRunning) return;
+  const display = document.getElementById('timer-display');
+  const progressBar = document.getElementById('timer-progress-bar');
+
+  const msLeft = state.timer.endTimeMs - Date.now();
+  const secLeft = Math.max(0, msLeft / 1000);
+  state.timer.remainingSeconds = secLeft;
+
+  if (display) display.textContent = formatTimeFromSeconds(secLeft);
+  const pct =
+    state.timer.totalSeconds > 0
+      ? Math.max(0, Math.min(100, (secLeft / state.timer.totalSeconds) * 100))
+      : 0;
+  if (progressBar) progressBar.style.width = `${pct}%`;
+
+  if (secLeft <= 0) {
+    completeRestTimer();
+  }
+}
+
+function completeRestTimer() {
+  if (!state.timer.isRunning && state.timer.notifiedForCurrentRun) return;
+  state.timer.isRunning = false;
+  state.timer.notifiedForCurrentRun = true;
+
+  clearInterval(state.timer.intervalId);
+  state.timer.worker?.postMessage({ cmd: 'STOP' });
+  stopBackgroundKeepAlive();
+
+  const banner = document.getElementById('timer-banner');
+  const display = document.getElementById('timer-display');
+  const progressBar = document.getElementById('timer-progress-bar');
+
+  banner?.classList.remove('timer-running');
+  banner?.classList.add('timer-finished');
+  if (display) display.textContent = '00:00';
+  if (progressBar) progressBar.style.width = '0%';
+
+  playBeepSequence();
+  showToast('🔔 休息結束！準備下一組訓練');
+
+  // If user is currently in another app / background tab, also trigger system notification from client side
+  const exerciseSelect = document.getElementById('exercise-select');
+  const exerciseName = exerciseSelect ? exerciseSelect.value : '';
+  if (document.visibilityState !== 'visible') {
+    triggerCrossAppNotification(
+      '🔔 IronLog — 組間休息結束！',
+      `休息時間到${exerciseName ? `（${exerciseName}）` : ''}，準備開始下一組訓練 💪`
+    );
+  }
+}
+
+function startRestTimer(seconds, options = {}) {
   ensureAudioContext();
+  startBackgroundKeepAlive();
+
+  // Automatically prompt for notification permission on first timer use if still 'default'
+  if (isNotificationSupported() && Notification.permission === 'default') {
+    requestNotificationPermission(true);
+  }
+
   clearInterval(state.timer.intervalId);
 
   const banner = document.getElementById('timer-banner');
@@ -462,39 +751,41 @@ function startRestTimer(seconds) {
   state.timer.remainingSeconds = seconds;
   state.timer.endTimeMs = Date.now() + seconds * 1000;
   state.timer.isRunning = true;
+  state.timer.notifiedForCurrentRun = false;
 
   banner.classList.remove('timer-finished');
   banner.classList.add('timer-running');
   display.textContent = formatTimeFromSeconds(seconds);
   progressBar.style.width = '100%';
 
-  state.timer.intervalId = setInterval(() => {
-    const msLeft = state.timer.endTimeMs - Date.now();
-    const secLeft = Math.max(0, msLeft / 1000);
-    state.timer.remainingSeconds = secLeft;
+  // 1. Schedule Service Worker Notification for cross-app alert
+  const exerciseSelect = document.getElementById('exercise-select');
+  sendSwMessage({
+    type: 'SCHEDULE_REST_NOTIFICATION',
+    endTimeMs: state.timer.endTimeMs,
+    exercise: exerciseSelect ? exerciseSelect.value : '',
+    alwaysNotify: Boolean(options.alwaysNotify)
+  });
 
-    display.textContent = formatTimeFromSeconds(secLeft);
-    const pct = state.timer.totalSeconds > 0
-      ? Math.max(0, Math.min(100, (secLeft / state.timer.totalSeconds) * 100))
-      : 0;
-    progressBar.style.width = `${pct}%`;
+  // 2. Start unthrottled Web Worker timer
+  const worker = ensureTimerWorker();
+  if (worker) {
+    worker.postMessage({ cmd: 'START', endTimeMs: state.timer.endTimeMs });
+  }
 
-    if (secLeft <= 0) {
-      clearInterval(state.timer.intervalId);
-      state.timer.isRunning = false;
-      banner.classList.remove('timer-running');
-      banner.classList.add('timer-finished');
-      display.textContent = '00:00';
-      progressBar.style.width = '0%';
-      playBeepSequence();
-      showToast('🔔 休息結束！準備下一組訓練');
-    }
-  }, 200);
+  // 3. Fallback main-thread interval
+  state.timer.intervalId = setInterval(updateTimerDisplayFromNow, 250);
 }
 
 function stopRestTimer() {
   clearInterval(state.timer.intervalId);
+  state.timer.worker?.postMessage({ cmd: 'STOP' });
+  stopBackgroundKeepAlive();
+  sendSwMessage({ type: 'CANCEL_REST_NOTIFICATION' });
+
   state.timer.isRunning = false;
+  state.timer.notifiedForCurrentRun = false;
+
   const banner = document.getElementById('timer-banner');
   const display = document.getElementById('timer-display');
   const progressBar = document.getElementById('timer-progress-bar');
@@ -512,6 +803,15 @@ function addSecondsToTimer(extraSeconds) {
   }
   state.timer.endTimeMs += extraSeconds * 1000;
   state.timer.totalSeconds += extraSeconds;
+
+  const exerciseSelect = document.getElementById('exercise-select');
+  sendSwMessage({
+    type: 'SCHEDULE_REST_NOTIFICATION',
+    endTimeMs: state.timer.endTimeMs,
+    exercise: exerciseSelect ? exerciseSelect.value : ''
+  });
+  state.timer.worker?.postMessage({ cmd: 'START', endTimeMs: state.timer.endTimeMs });
+  updateTimerDisplayFromNow();
 }
 
 // ==========================================
@@ -1249,6 +1549,27 @@ function bindEvents() {
     }
   });
 
+  // Notification Permission & Cross-App Background Test
+  document.getElementById('enable-notify-banner-btn')?.addEventListener('click', () => {
+    requestNotificationPermission(false);
+  });
+
+  document.getElementById('request-notify-btn')?.addEventListener('click', () => {
+    requestNotificationPermission(false);
+  });
+
+  document.getElementById('test-bg-notify-btn')?.addEventListener('click', async () => {
+    await requestNotificationPermission(true);
+    startRestTimer(3, { alwaysNotify: true });
+    showToast('⏱️ 已啟動 3 秒測試倒數！請立即切換到其他 App 或主畫面測試');
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.timer.isRunning) {
+      updateTimerDisplayFromNow();
+    }
+  });
+
   document.getElementById('test-sound-btn').addEventListener('click', () => {
     playBeepSequence();
     showToast('🔊 已播放計時完成提示音');
@@ -1324,6 +1645,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderTodaySets();
   renderHistoryAndStats();
   renderCloudBackupStatus();
+  updateNotificationStatusUI();
   bindEvents();
   initSupabaseClient();
   checkPwaAndServiceWorkerStatus();
